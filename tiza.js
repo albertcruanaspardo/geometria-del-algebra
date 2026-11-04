@@ -112,6 +112,15 @@ const TIZA = (() => {
   /* tamaño real de cada símbolo: altura respecto a la línea (de la guía superior a la base) */
   const RELH = { x: .55, a: .55, c: .55, y: .85, t: .9, "+": .6, "<": .6, ">": .6, "π": .6, "(": 1.15, ")": 1.15 };
   const SYMBOLS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "x", "y", "a", "b", "c", "t", "+", "-", "=", "(", ")", "/", "<", ">", "π"];
+  /* todos los símbolos que entiende la pizarra, por grupos (para corregir y para enseñar);
+     los que no tienen plantilla de serie se reconocen en cuanto el estudiante los enseña o los corrige una vez */
+  const GROUPS = [
+    ["cifras", "0123456789".split("")],
+    ["letras", "abcdefghijkmnpqrstuvwxyz".split("")],
+    ["griegas", "αβγδθλμφωπ".split("")],
+    ["signos", ["+", "-", "·", "/", "^", "=", "<", ">", "≤", "≥", "(", ")", "|", "√", "∛", "²", "³", ".", ";", "∫", "'"]],
+  ];
+  const ALL = [...new Set(GROUPS.flatMap(g => g[1]))];
 
   /* ---------- muestras del estudiante (con su tamaño y proporción) ---------- */
   const KEY = "gda-tiza-v2";
@@ -233,7 +242,7 @@ const TIZA = (() => {
       const key = it.gis && it.gis.length ? Math.min(...it.gis) : null, fixed = ctx && ctx.ov && key !== null && ctx.ov[key] !== undefined;
       if (fixed) ch = ctx.ov[key];
       if (ctx && ctx.items) ctx.items.push({ b: it.b, key, ch, alts, strokes: it.s, Href: raised ? .6 * Href : Href, fixed });
-      const isSup = k > 0 && raised && !["-", "=", "·", "+", "<", ">"].includes(ch) && (sup || /[0-9a-zπ)]/i.test(prevCh));
+      const isSup = k > 0 && raised && !["-", "=", "·", "+", "<", ">", "≤", "≥", "²", "³", "^", ";", "'", "|"].includes(ch) && (sup || /[0-9a-zα-ω)]/i.test(prevCh));
       if (isSup) sup += ch; else { flush(); out += ch; }
       prevCh = ch;
     });
@@ -276,5 +285,5 @@ const TIZA = (() => {
     const S = strokes.map(s => ({ s, b: bb(s) })), Href = guide ? guide.base - guide.top : 30;
     return group(S, Href).sort((a, b) => (a.b[0] + a.b[1]) / 2 - (b.b[0] + b.b[1]) / 2).map(g => ({ ch: classify(g.s, Href), n: g.s.length, relh: +((g.b[3] - g.b[2]) / Href).toFixed(2), asp: +((g.b[1] - g.b[0]) / (g.b[3] - g.b[2])).toFixed(2), sh: g.s.length === 1 ? shape(g.s[0]) : null }));
   }
-  return { read, readDetailed, classify, train, learn, forget, samples, SYMBOLS, BASE, debug, breakdown };
+  return { read, readDetailed, classify, train, learn, forget, samples, SYMBOLS, GROUPS, ALL, BASE, debug, breakdown };
 })();

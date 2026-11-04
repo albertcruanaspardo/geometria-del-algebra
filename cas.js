@@ -556,6 +556,7 @@ const CAS = (() => {
         continue;
       }
       if (c === "π") { out.push({ k: "sym", v: "π" }); i++; continue; }
+      if (/[α-ωΑ-Ω]/.test(c)) { out.push({ k: "sym", v: c }); i++; continue; }      // letras griegas: variables
       if (c === "√") { out.push({ k: "fn", v: "sqrt" }); i++; continue; }
       if (c === "∛") { out.push({ k: "fn", v: "cbrt" }); i++; continue; }
       if ("+-*/^()|".includes(c)) { out.push({ k: c }); i++; continue; }
