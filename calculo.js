@@ -123,20 +123,120 @@ const CALC = (() => {
   function diff(f) { let e = D(f); for (let i = 0; i < 200; i++) { const s = dStep(e); if (!s) break; e = s.e; } return find(e, isD) ? null : clean(e); }
   function primitive(f) { let e = I(f); for (let i = 0; i < 100; i++) { const s = iStep(e); if (!s) break; e = s.e; } return find(e, isI) ? null : clean(e); }
 
+  /* ---------- límites y regla de L'Hôpital ----------
+     Cerca de x = a, si f(a) = g(a) = 0, numerador y denominador se confunden con sus tangentes:
+     f(x) ≈ f′(a)(x − a), g(x) ≈ g′(a)(x − a), y el cociente f/g se confunde con el de las pendientes f′/g′. */
+  const INF = sym("∞"), hasInf = e => symbols(e).includes("∞");
+  const infSign = e => /^[−-]/.test(S(e)) ? -1 : 1;
+  const aNum = (a, env = {}) => hasInf(a) ? infSign(a) * Infinity : evalN(a, env);
+  const safe = (e, env) => x => { try { return evalN(e, { ...env, x }); } catch (_) { return NaN; } };
+  // valor al que se acerca e(x) cuando x → a (a puede ser ±∞); NaN si no se puede decidir
+  function near(e, aN, env = {}) {
+    const f = safe(e, env);
+    if (!isFinite(aN)) {
+      const s = Math.sign(aN), v3 = f(s * 1e3), v6 = f(s * 1e6), v12 = f(s * 1e12);
+      if ([v3, v6, v12].some(isNaN)) return NaN;
+      if (!isFinite(v12) && !isFinite(v6)) return Math.sign(v12) * Infinity;
+      const d1 = Math.abs(v6 - v3), d2 = Math.abs(v12 - v6);
+      if (d2 > .5 * d1 && d2 > 1e-3) return Math.abs(v12) > Math.abs(v6) && Math.abs(v6) > Math.abs(v3) && Math.sign(v12) === Math.sign(v6) ? Math.sign(v12) * Infinity : NaN;
+      return Math.abs(v12) < 1e-8 || Math.abs(v6) < 1e-9 ? 0 : v6;
+    }
+    const v = f(aN); if (!isNaN(v)) return v;
+    // por cada lado, x = a ± 10⁻², 10⁻⁴, 10⁻⁶: si las diferencias no se encogen, diverge
+    const side = s => {
+      const [v1, v2, v3] = [1e-2, 1e-4, 1e-6].map(h => f(aN + s * h));
+      if ([v1, v2, v3].some(isNaN)) return NaN;
+      if (!isFinite(v3)) return Math.sign(v3) * Infinity;
+      const d1 = Math.abs(v2 - v1), d2 = Math.abs(v3 - v2);
+      if (d2 > .5 * d1 && d2 > 1e-3) return Math.abs(v3) > Math.abs(v2) && Math.abs(v2) > Math.abs(v1) && Math.sign(v3) === Math.sign(v2) ? Math.sign(v3) * Infinity : NaN;
+      return v3;
+    };
+    const l = side(-1), r = side(1);
+    if (isFinite(l) && isFinite(r)) return Math.abs(l - r) < 1e-3 * (1 + Math.abs(r)) ? (f(aN - 1e-4) + f(aN + 1e-4)) / 2 : NaN;   // la media de los dos lados anula el error de primer orden
+    if (isNaN(l) || isNaN(r)) return isNaN(l) ? r : l;
+    return l === r ? r : NaN;
+  }
+  // numerador y denominador, contando e^(−x) o x^(−2) como denominadores
+  function ndL(e) {
+    const fs = e.t === "mul" ? e.a : [e], N = [], Dn = [];
+    for (const f of fs) {
+      if (f.t === "pow") { const [q] = CAS.split(f.e); if (q.n < 0n) { const ne = simplify(Neg(f.e)); Dn.push(isOne(ne) ? f.b : Pow(f.b, ne)); continue; } }
+      if (isNum(f) && f.q.d !== 1n) { N.push(num(Q(f.q.n))); Dn.push(num(Q(f.q.d))); continue; }
+      N.push(f);
+    }
+    return [N.length ? Mul(...N) : int(1), Dn.length ? Mul(...Dn) : int(1)];
+  }
+  function niceNum(v) {
+    if (Math.abs(v) < 1e-9) return int(0);
+    for (let d = 1; d <= 1000; d++) { const n = Math.round(v * d); if (Math.abs(v - n / d) < 1e-8) return frac(n, d); }
+    if (Math.abs(v - Math.E) < 1e-5) return sym("e");
+    if (Math.abs(v - Math.PI) < 1e-6) return sym("π");
+    return CAS.approx(v);
+  }
+  function parsePoint(p) {
+    if (/^\+?(∞|inf|infinito)$/.test(p)) return INF;
+    if (/^-(∞|inf|infinito)$/.test(p)) return Neg(INF);
+    return CAS.parse(p);
+  }
+  function limSteps(f, a, env = {}) {
+    const aN = aNum(a, env), A = S(a), out = [], st = (g, desc, o = {}) => state("lim", f, g, { a, desc, ...o });
+    const z = v => Math.abs(v) < 1e-9, inf = v => v === Infinity || v === -Infinity;
+    const big = e => inf(near(Fn("abs", e), aN, env));      // ∞/∞ solo mira el tamaño: 1/x crece en valor absoluto por los dos lados
+    let g = f; out.push({ s: st(g, `Límite cuando x → ${A}`) });
+    for (let k = 0; k < 6; k++) {
+      let [N, Dn] = ndL(g);
+      if (isOne(Dn)) {      // 0·∞: u·v = v/(1/u), y se aplica L'Hôpital a ese cociente
+        const fs = g.t === "mul" ? g.a : [], i = fs.findIndex(u => hasX(u) && z(near(u, aN, env))), rest = fs.filter((_, j) => j !== i);
+        if (i >= 0 && rest.length && big(Mul(...rest))) {
+          const u = fs[i], v = Mul(...rest); N = v; Dn = Pow(u, int(-1));
+          out.push({ s: st(g, `Forma indeterminada 0·∞: se escribe como cociente, ${S(g)} = (${S(v)})/(1/${u.t === "sym" ? S(u) : "(" + S(u) + ")"}), que es de la forma ∞/∞`), fig: { id: "l-graph", bind: { g, a: aN } } });
+        } else break;
+      }
+      const n = near(N, aN, env), d = near(Dn, aN, env), form = z(n) && z(d) ? "0/0" : big(N) && big(Dn) ? "∞/∞" : null;
+      if (!form) break;
+      const dN = diff(N), dD = diff(Dn);
+      if (!dN || !dD) { out.push({ s: st(g, `Forma ${form}, pero no sé derivar el numerador o el denominador`, { final: true }) }); return out; }
+      const prev = g; g = Div(dN, dD);
+      out.push({ s: st(g, `Forma indeterminada ${form}: regla de L'Hôpital, se deriva por separado el numerador, (${S(N)})′ = ${S(dN)}, y el denominador, (${S(Dn)})′ = ${S(dD)}`),
+        fig: { id: form === "0/0" && isFinite(aN) ? "l-hopital" : "l-graph", bind: { N, D: Dn, dN, dD, g: prev, a: aN } } });
+      const c = clean(g); if (S(c).length < S(g).length) { g = c; out.push({ s: st(g, "Simplificar") }); }
+    }
+    const [N, Dn] = ndL(g), n = near(N, aN, env), d = near(Dn, aN, env), v = near(g, aN, env);
+    let val = null, desc = "";
+    if (isFinite(aN) && isFinite(d) && !z(d) && isFinite(n)) {
+      try { val = clean(subs(g, { x: a })); const w = evalN(val, env); if (!isFinite(w) || Math.abs(w - v) > 1e-6 * (1 + Math.abs(v))) val = null; } catch (_) { val = null; }
+      desc = `Sustituir x = ${A}: el denominador ya no se anula y el límite es el valor de la función`;
+    }
+    if (!val && isFinite(aN) && z(d) && isFinite(n) && !z(n)) {
+      const fx = safe(g, env), l = fx(aN - 1e-6), r = fx(aN + 1e-6), sg = u => u < 0 ? "−∞" : "+∞";
+      if (isNaN(l) || isNaN(r) || Math.sign(l) === Math.sign(r)) { const s = isNaN(r) ? l : r; val = s > 0 ? INF : Neg(INF); desc = "El denominador tiende a 0 y el numerador no: el límite es infinito (asíntota vertical)"; }
+      else { out.push({ s: st(g, `El denominador tiende a 0 y el numerador a ${f2(n)}: por la izquierda va a ${sg(l)} y por la derecha a ${sg(r)}, así que el límite no existe`, { final: true }), fig: { id: "l-graph", bind: { g: f, a: aN } } }); return out; }
+    }
+    if (!val && inf(v)) { val = v > 0 ? INF : Neg(INF); desc = "Crece sin límite"; }
+    if (!val && isFinite(v)) { val = niceNum(v); desc = `Valor al que se acerca cuando x → ${A}`; }
+    if (!val) { out.push({ s: st(g, `No se puede decidir el límite: la función oscila o no está definida cerca de x = ${A}`, { final: true }) }); return out; }
+    out.push({ s: st(val, desc, { final: true }), fig: { id: "l-graph", bind: { g: f, a: aN } } });
+    return out;
+  }
+  const limVal = s => { const aN = aNum(s.a); if (hasInf(s.cur)) return infSign(s.cur) * Infinity; if (!hasX(s.cur)) { try { return evalN(s.cur, {}); } catch (_) { return NaN; } } return near(s.cur, aN); };
+
   /* ---------- estados y pasos ---------- */
   const base = o => ({ kind: "calc", rel: "=", v: "x", v0: "x", shift: 0, found: [], tag: null, notes: [], manual: false, rule: null, prop: null, desc: o.desc || "" });
   function state(op, f, cur, o = {}) {
+    if (op === "lim") return { ...base(o), op, f, a: o.a, cur, final: !!o.final, dres: null, F: null, params: [], cas: { eqs: [{ lhs: f, rhs: hasInf(cur) ? int(0) : cur, rel: "=" }], join: null } };
     const lhs = op === "deriv" || op === "tan" ? D(f) : I(f);
     return { ...base(o), op, f, a: o.a, b: o.b, cur, final: !!o.final, dres: op === "deriv" || op === "tan" ? diff(f) : null, F: op !== "deriv" && op !== "tan" ? primitive(f) : null, params: [], cas: { eqs: [{ lhs, rhs: cur, rel: "=" }], join: null } };
   }
   function text(s) {
+    if (s.op === "lim") { const L = `lim(x→${S(s.a)})`, par = e => e.t === "add" ? `(${S(e)})` : S(e); return hasX(s.cur) ? `${L} ${par(s.cur)}` : `${L} ${par(s.f)} = ${S(s.cur)}`; }
     if (s.op === "tan") return `f(x) = ${S(s.f)};  f′(x) = ${s.dres ? S(s.dres) : "…"}`;
     const fx = s.f.t === "add" ? `(${S(s.f)})` : S(s.f);
     const lhs = s.op === "defint" ? `∫[${S(s.a)}, ${S(s.b)}] ${fx} dx` : s.op === "deriv" ? `d/dx(${S(s.f)})` : `∫ ${fx} dx`;
     return `${lhs} = ${S(s.cur)}${s.op === "integ" && s.final ? " + C" : ""}`;
   }
-  const tex = s => s.op === "defint" ? `\\int_{${CAS.tex(s.a)}}^{${CAS.tex(s.b)}} ${CAS.tex(s.f)}\\,dx = ${CAS.tex(s.cur)}` : `${CAS.tex(s.cas.eqs[0].lhs)} = ${CAS.tex(s.cur)}${s.op === "integ" && s.final ? " + C" : ""}`;
+  const tex = s => s.op === "lim" ? `\\lim_{x\\to ${CAS.tex(s.a)}} ${CAS.tex(hasX(s.cur) ? s.cur : s.f)}${hasX(s.cur) ? "" : " = " + CAS.tex(s.cur)}` : s.op === "defint" ? `\\int_{${CAS.tex(s.a)}}^{${CAS.tex(s.b)}} ${CAS.tex(s.f)}\\,dx = ${CAS.tex(s.cur)}` : `${CAS.tex(s.cas.eqs[0].lhs)} = ${CAS.tex(s.cur)}${s.op === "integ" && s.final ? " + C" : ""}`;
   function steps(op, f, a, b) {
+    if (op === "lim") return limSteps(f, a);
     const out = [], first = op === "deriv" ? D(f) : I(f);
     out.push({ s: state(op, f, first, { a, b, desc: op === "deriv" ? "Derivar" : op === "defint" ? `Área bajo la curva entre ${S(a)} y ${S(b)}` : "Buscar una primitiva" }) });
     let e = first;
@@ -162,6 +262,12 @@ const CALC = (() => {
   /* comprobar una línea de cálculo frente a la anterior */
   function verdict(a, b) {
     if (b.op !== a.op || key(simplify(b.f)) !== key(simplify(a.f))) return { lvl: "info", msg: "nuevo cálculo" };
+    if (b.op === "lim") {     // dos líneas de un límite son equivalentes si tienden al mismo valor
+      const p = limVal(a), q = limVal(b);
+      if (isNaN(p) || isNaN(q)) return { lvl: "info", msg: "" };
+      const same = !isFinite(p) || !isFinite(q) ? p === q : Math.abs(p - q) < 1e-4 * (1 + Math.abs(p));
+      return same ? { lvl: "ok", msg: "tiende al mismo límite" } : { lvl: "bad", msg: "no tiende al mismo límite que la línea anterior" };
+    }
     const xs = [-1.7, -.6, .4, 1.3, 2.2, 3.1], env = x => ({ x });
     if (b.op === "integ" && !find(b.cur, isI)) {   // la primitiva se comprueba derivándola
       const ok = xs.every(x => { const d = evalN(D(b.cur), env(x)), f = evalN(b.f, env(x)); return !isFinite(d) || !isFinite(f) || Math.abs(d - f) < 1e-5 * (1 + Math.abs(f)); });
@@ -177,6 +283,8 @@ const CALC = (() => {
     // el paréntesis abierto en «open» debe cerrarse justo al final: «d/dx(x²)·sen x» no es una derivada entera
     const whole = (str, open) => { let d = 0; for (let i = open; i < str.length; i++) { if (str[i] === "(") d++; else if (str[i] === ")") { d--; if (!d) return i === str.length - 1; } } return false; };
     let m;
+    // límites: lim(x→a) f, lim_(x→a) f, lim(x->a) f
+    if ((m = s.match(/^lim_?\(x(?:→|->)(.+?)\)(.+)$/))) return { op: "lim", f: P(m[2]), a: parsePoint(m[1]) };
     if (s.startsWith("d/dx(") && whole(s, 4)) return { op: "deriv", f: P(s.slice(5, -1)) };
     if ((m = s.match(/^d\/dx([^(].*)$/)) && !/d\/dx/.test(m[1])) return { op: "deriv", f: P(m[1]) };
     if (s.startsWith("derivada(") && whole(s, 8)) return { op: "deriv", f: P(s.slice(9, -1)) };
@@ -300,6 +408,43 @@ const CALC = (() => {
   });
   const bboxOf = items => { const pts = items.flatMap(i => i.p || (i.k === "txt" ? [i.p] : [])); const b = boxOf(pts.filter(p => p && p.every && p.every(isFinite))); const m = .1 * Math.max(b[1] - b[0], b[3] - b[2], 1); return [b[0] - m, b[1] + m, b[2] - m, b[3] + m]; };
 
+  /* ---------- figuras del límite ---------- */
+  // L'Hôpital como geometría: la curva (g(x), f(x)) pasa por el origen en x = a; f/g es la pendiente de la cuerda
+  // desde el origen, y al acercarse x a a la cuerda se vuelve la tangente, de pendiente f′(a)/g′(a)
+  reg("l-hopital", "Regla de L'Hôpital", "la cuerda se vuelve tangente", (b, env, t) => {
+    const Nf = safe(b.N, env), Df = safe(b.D, env), a = b.a, m0 = near(Div(b.dN, b.dD), a, env), m = isFinite(m0) ? Math.round(m0 * 1e6) / 1e6 : m0, pts = [];
+    for (let i = 0; i <= 80; i++) { const x = a - 1 + 2 * i / 80, p = [Df(x), Nf(x)]; if (p.every(v => isFinite(v) && Math.abs(v) < 40)) pts.push(p); }
+    if (pts.length < 3) return noFig("L'Hôpital", "Con los valores actuales esta figura no existe");
+    const xs = pts.map(p => p[0]).concat(0), ys = pts.map(p => p[1]).concat(0), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), pad = .12 * Math.max(x1 - x0, y1 - y0, .5);
+    const h = lerp(.9, .01, ph(t, .05, .85)), P = [Df(a + h), Nf(a + h)], items = [{ k: "poly", p: pts, close: false, c: C.blue, w: 2.4 }, { k: "pt", p: [0, 0], c: C.ink, r: 4 }];
+    if (isFinite(m)) { const R = Math.max(x1 - x0, y1 - y0) + pad; items.push(seg([-R, -R * m], [R, R * m], C.green, { w: 2, dash: [6, 4] })); }
+    if (P.every(isFinite)) items.push(seg([0, 0], P, C.gold, { w: 2.4 }), { k: "pt", p: P, c: C.red, r: 4.5, lab: `f/g = ${f2(P[1] / P[0])}` });
+    return { title: "L'Hôpital: la cuerda se vuelve tangente", cap: `Cada x da el punto (g(x), f(x)), con f = ${S(b.N)} y g = ${S(b.D)}; en x = ${f2(a)} los dos valen 0 y la curva pasa por el origen. El cociente f/g es la pendiente de la cuerda (oro); al acercarse x, la cuerda se vuelve la tangente (verde), de pendiente f′/g′ = ${f2(m)}.`, items, box: [x0 - pad, x1 + pad, y0 - pad, y1 + pad], axes: true };
+  });
+  function limGraph(e, a, env, t, title) {
+    const g = safe(e, env), L0 = near(e, a, env), L = isFinite(L0) ? Math.round(L0 * 1e6) / 1e6 : L0, fin = isFinite(a), items = [{ k: "curve", f: g, c: C.blue, w: 2.2 }], ys = [];
+    const X0 = fin ? a - 3 : a > 0 ? 0 : -32, X1 = fin ? a + 3 : a > 0 ? 32 : 0;
+    for (let i = 0; i <= 120; i++) { const y = g(X0 + (X1 - X0) * i / 120); if (isFinite(y)) ys.push(y); }
+    if (isFinite(L)) ys.push(L); ys.sort((p, q) => p - q);
+    const lo = Math.min(ys[Math.floor(ys.length * .05)] ?? -1, 0), hi = Math.max(ys[Math.ceil(ys.length * .95) - 1] ?? 1, 0), pad = .15 * (hi - lo || 1), p = ph(t, .05, .9);
+    if (isFinite(L)) items.push(seg([X0, L], [X1, L], C.green, { w: 1.4, dash: [6, 4] }), txt([X1, L], `L = ${f2(L)}`, C.green, { al: "right", dy: -10, b: 1 }));
+    if (fin) {
+      const h = lerp(2.5, .03, p), pl = [a - h, g(a - h)], pr = [a + h, g(a + h)];
+      items.push(seg([a, lo - pad], [a, hi + pad], C.muted || C.ink, { w: 1, dash: [3, 4] }));
+      if (isFinite(L)) items.push({ k: "circ", o: [a, L], r: .05 * (X1 - X0) / 3, c: C.ink, w: 1.6 });
+      [pl, pr].forEach(q => isFinite(q[1]) && items.push({ k: "pt", p: q, c: C.red, r: 4.5 }));
+      if (isFinite(pr[1])) items.push(txt(pr, `f(${f2(pr[0])}) = ${f2(pr[1])}`, C.red, { al: "left", dx: 8, f: 11 }));
+    } else {
+      const x = lerp(a > 0 ? 1 : -1, a > 0 ? 30 : -30, p), q = [x, g(x)];
+      if (isFinite(q[1])) items.push({ k: "pt", p: q, c: C.red, r: 4.5 }, txt(q, `f(${f2(x)}) = ${f2(q[1])}`, C.red, { al: a > 0 ? "right" : "left", dx: a > 0 ? -8 : 8, dy: -10, f: 11 }));
+    }
+    const where = fin ? `x = ${f2(a)} por los dos lados` : a > 0 ? "x muy grande" : "x muy negativo";
+    const cap = isFinite(L) ? `Al acercarse ${where}, los puntos de la gráfica se acercan a la altura L = ${f2(L)}${fin ? ": el límite rellena el hueco de la curva en x = a, aunque allí la fórmula dé 0/0" : ""}.` : `Al acercarse ${where}, la gráfica no se acerca a ninguna altura fija${L === Infinity || L === -Infinity ? ": crece sin límite (asíntota)" : ""}.`;
+    return { title, cap, items, box: [X0, X1, lo - pad, hi + pad], axes: true, free: true };
+  }
+  reg("l-graph", "Límite", "a dónde se acerca la gráfica", (b, env, t) => limGraph(b.g, b.a, env, t, "A dónde se acerca la gráfica"));
+  function limScene(s, env, t) { return limGraph(s.f, aNum(s.a, env), env, t, "El límite: a dónde se acerca la gráfica"); }
+
   /* ---------- paneles principales: tangente y área ---------- */
   function tanScene(s, env, t) {
     const f = fn(s.f, env), d = s.dres ? fn(s.dres, env) : (x => (f(x + 1e-5) - f(x - 1e-5)) / 2e-5), items = [{ k: "curve", f, c: C.blue, w: 2.2 }];
@@ -323,6 +468,6 @@ const CALC = (() => {
     const ys = []; for (let i = 0; i <= 60; i++) { const v = -1 + 4.5 * i / 60; [f(v), Fp ? Fp(v) - Fp(0) : NaN].forEach(y => isFinite(y) && ys.push(y)); }
     return { title: "La función área crece a ritmo f(x)", cap: `El área verde bajo f desde 0 hasta x es la función A(x) (oro). Al avanzar dx se añade una franja f(x)·dx: A′(x) = f(x). Por eso integrar es buscar una primitiva${s.F ? ": F(x) = " + S(s.F) + " + C" : ""}.`, items, box: [-1, 3.5, Math.min(0, ...ys) - .3, Math.max(0, ...ys) + .3], axes: true, free: true };
   }
-  const GEO = { deriv: "La derivada mide cómo crece una figura cuando x crece un poco: la pendiente de la tangente.", integ: "La integral mide un área: la primitiva es la función área, que crece en franjas f(x)·dx.", defint: "La integral definida es el área bajo la curva entre a y b: límite de sumas de rectángulos.", tan: "La tangente es el límite de las secantes; su pendiente en cada punto es la derivada." };
-  return { steps, state, text, tex, verdict, parseLine, isLine, diff, primitive, tanScene, areaScene, GEO, isD, isI, find };
+  const GEO = { deriv: "La derivada mide cómo crece una figura cuando x crece un poco: la pendiente de la tangente.", integ: "La integral mide un área: la primitiva es la función área, que crece en franjas f(x)·dx.", defint: "La integral definida es el área bajo la curva entre a y b: límite de sumas de rectángulos.", tan: "La tangente es el límite de las secantes; su pendiente en cada punto es la derivada.", lim: "El límite es la altura a la que se acerca la gráfica. L'Hôpital: cerca de x = a numerador y denominador se confunden con sus rectas tangentes, y su cociente con el cociente de las pendientes f′/g′." };
+  return { steps, state, text, tex, verdict, parseLine, isLine, diff, primitive, tanScene, areaScene, limScene, parsePoint, near, GEO, isD, isI, find };
 })();

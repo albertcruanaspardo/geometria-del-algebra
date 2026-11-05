@@ -116,9 +116,9 @@ const TIZA = (() => {
      los que no tienen plantilla de serie se reconocen en cuanto el estudiante los enseña o los corrige una vez */
   const GROUPS = [
     ["cifras", "0123456789".split("")],
-    ["letras", "abcdefghijkmnpqrstuvwxyz".split("")],
+    ["letras", "abcdefghijklmnpqrstuvwxyz".split("")],
     ["griegas", "αβγδθλμφωπ".split("")],
-    ["signos", ["+", "-", "·", "/", "^", "=", "<", ">", "≤", "≥", "(", ")", "|", "√", "∛", "²", "³", ".", ";", "∫", "'"]],
+    ["signos", ["+", "-", "·", "/", "^", "=", "<", ">", "≤", "≥", "(", ")", "|", "√", "∛", "²", "³", ".", ";", "∫", "'", "→", "∞"]],
   ];
   const ALL = [...new Set(GROUPS.flatMap(g => g[1]))];
 
